@@ -1,0 +1,474 @@
+
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+
+  "Description" : "Launches a Marathon LB stack",
+
+  "Parameters" : {
+    "InstanceType" : {
+      "Description" : "EC2 instance type",
+      "Type" : "String",
+      "Default" : "t2.micro",
+      "AllowedValues" : [
+        "t2.micro", "t2.small", "t2.medium", "m3.medium", "m3.large", "m3.xlarge", "m3.2xlarge",
+        "c4.large", "c4.xlarge", "c4.2xlarge", "c4.4xlarge", "c4.8xlarge", "c3.large", "c3.xlarge", "c3.2xlarge", "c3.4xlarge", "c3.8xlarge",
+        "r3.large", "r3.xlarge", "r3.2xlarge", "r3.4xlarge", "r3.8xlarge",
+        "i2.xlarge", "i2.2xlarge", "i2.4xlarge", "i2.8xlarge", "hs1.8xlarge",
+        "g2.2xlarge"
+      ],
+      "ConstraintDescription" : "must be a valid, HVM-compatible EC2 instance type."
+    },
+    "KeyName" : {
+      "Description" : "Name of an existing EC2 KeyPair to enable SSH access to the instances",
+      "Type" : "AWS::EC2::KeyPair::KeyName"
+    },
+    "MarathonUrl" : {
+      "Description" : "Marathon server URL (http[s]://<host>:<port>)",
+      "Type": "String"
+    },
+    "MarathonServerSecurityGroup" : {
+      "Description" : "Security group ID for Marathon servers",
+      "Type" : "AWS::EC2::SecurityGroup::Id"
+    },
+    "MesosSlaveSecurityGroup" : {
+      "Description" : "Security group ID for Mesos Slaves",
+      "Type" : "AWS::EC2::SecurityGroup::Id"
+    },
+    "ProxyRules" : {
+      "Description" : "JSON array of (app name, protocol, app (service) port, HAProxy port) tuples (e.g., '[[\"myapp\", \"http\", 8081, 80]]'",
+      "Type": "String"
+    },
+    "InstanceCount" : {
+      "Description" : "Number of LB nodes to launch",
+      "Type" : "Number",
+      "Default" : "1"
+    },
+    "Subnets" : {
+      "Description" : "List of VPC subnet IDs for the cluster. Note: must match the passed AvailabilityZones.",
+      "Type" : "List<AWS::EC2::Subnet::Id>"
+    },
+    "VpcId" : {
+      "Description" : "VPC associated with the provided subnets",
+      "Type" : "AWS::EC2::VPC::Id"
+    },
+    "AdminSecurityGroup" : {
+      "Description" : "Existing security group that should be granted administrative access (e.g., 'sg-123456')",
+      "Type" : "AWS::EC2::SecurityGroup::Id"
+    },
+    "AvailabilityZones": {
+      "Description" : "(Optional) If passed, only launch nodes in these AZs (e.g., 'us-east-1a,us-east-1b'). Note: these must match the passed Subnets.",
+      "Type" : "CommaDelimitedList",
+      "Default" : ""
+    }
+  },
+
+  "Conditions" : {
+    "UseAllAvailabilityZones" : {"Fn::Equals" : [{ "Fn::Join" : ["", {"Ref" : "AvailabilityZones"} ]}, ""]}
+  },
+
+  "Mappings" : {
+    "RegionMap" : {
+      "us-east-1" : {
+        "AMI" : "ami-86fabdee"
+      },
+      "us-west-1" : {
+        "AMI" : "ami-bc4951f9"
+      },
+      "us-west-2" : {
+        "AMI" : "ami-49411979"
+      },
+      "eu-west-1" : {
+        "AMI" : "ami-1566ea62"
+      },
+      "ap-southeast-1" : {
+        "AMI" : "ami-787b512a"
+      },
+      "ap-southeast-2" : {
+        "AMI" : "ami-c35c28f9"
+      },
+      "ap-northeast-1" : {
+        "AMI" : "ami-7a98817b"
+      },
+      "sa-east-1" : {
+        "AMI" : "ami-bd6ad6a0"
+      }
+    }
+  },
+
+  "Resources" : {
+
+    "ServerRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version" : "2012-10-17",
+          "Statement": [ {
+            "Effect": "Allow",
+            "Principal": {
+              "Service": [ "ec2.amazonaws.com" ]
+            },
+            "Action": [ "sts:AssumeRole" ]
+          } ]
+        },
+        "Path": "/",
+        "Policies": [ {
+          "PolicyName": "root",
+          "PolicyDocument": {
+            "Version" : "2012-10-17",
+            "Statement":[{
+              "Effect":"Allow",
+              "Action": [
+                "elasticloadbalancing:*"
+              ],
+              "Resource": "*"
+            }]
+          }
+        } ]
+      }
+    },
+
+    "ServerInstanceProfile": {
+      "Type": "AWS::IAM::InstanceProfile",
+      "Properties": {
+        "Path": "/",
+        "Roles": [ {
+          "Ref": "ServerRole"
+        } ]
+      }
+    },
+
+    "ServerGroup" : {
+      "Type" : "AWS::AutoScaling::AutoScalingGroup",
+      "UpdatePolicy" : {
+        "AutoScalingRollingUpdate" : {
+          "MaxBatchSize" : "1",
+          "MinInstancesInService" : "1",
+          "PauseTime" : "PT2M"
+        }
+      },
+      "Properties" : {
+        "AvailabilityZones" : {
+          "Fn::If" : [
+            "UseAllAvailabilityZones",
+            { "Fn::GetAZs": "" },
+            {"Ref" : "AvailabilityZones"}
+          ]
+        },
+        "LaunchConfigurationName" : { "Ref" : "LaunchConfig" },
+        "MinSize" : { "Ref" : "InstanceCount" },
+        "MaxSize" : { "Ref" : "InstanceCount" },
+        "DesiredCapacity" : { "Ref" : "InstanceCount" },
+        "LoadBalancerNames" : [ { "Ref" : "ElasticLoadBalancer" } ],
+        "VPCZoneIdentifier" : { "Ref" : "Subnets" }
+      }
+    },
+
+    "LaunchConfig" : {
+      "Type" : "AWS::AutoScaling::LaunchConfiguration",
+      "Metadata" : {
+        "AWS::CloudFormation::Init" : {
+          "config": {
+
+            "packages" : {
+              "python" : {
+                "jinja2" : [],
+                "marathon" : [],
+                "boto" : []
+              }
+            },
+
+            "files" : {
+
+              "/etc/haproxy/haproxy.cfg.jinja2" : {
+                "content" : { "Fn::Join" : ["\n", [
+                  "global",
+                  "    log /dev/log    local0",
+                  "    log /dev/log    local1 notice",
+                  "    chroot /var/lib/haproxy",
+                  "    user haproxy",
+                  "    group haproxy",
+                  "    daemon",
+                  "    maxconn 8192",
+                  "",
+                  "defaults",
+                  "    log global",
+                  "    mode    http",
+                  "    option  httplog",
+                  "    option  dontlognull",
+                  "    contimeout 5000",
+                  "    clitimeout 50000",
+                  "    srvtimeout 50000",
+                  "    errorfile 400 /etc/haproxy/errors/400.http",
+                  "    errorfile 403 /etc/haproxy/errors/403.http",
+                  "    errorfile 408 /etc/haproxy/errors/408.http",
+                  "    errorfile 500 /etc/haproxy/errors/500.http",
+                  "    errorfile 502 /etc/haproxy/errors/502.http",
+                  "    errorfile 503 /etc/haproxy/errors/503.http",
+                  "    errorfile 504 /etc/haproxy/errors/504.http",
+                  "",
+                  "listen stats :1936",
+                  "    mode http",
+                  "    stats enable",
+                  "    stats hide-version",
+                  "    stats realm HAProxy\\ Stats",
+                  "    stats uri /",
+                  "    stats auth admin:cleverpassword",
+                  "",
+                  "{% for fe in frontends -%}",
+                  "listen {{ fe.id }}-{{ fe.port }}",
+                  "    bind *:{{ fe.port }}",
+                  "    mode {{ fe.protocol }}",
+                  "    option {{ fe.protocol }}log",
+                  "    {% for be in fe.backends -%}",
+                  "    server {{ be.id }} {{ be.host }}:{{ be.port }}",
+                  "    {% endfor %}",
+                  "{% endfor %}",
+                  "",
+                  ""
+                ]]},
+                "mode"    : "000644",
+                "owner"   : "root",
+                "group"   : "root"
+              },
+
+              "/usr/local/bin/routathon" : {
+                "content" : { "Fn::Join" : ["\n", [
+                  "#!/usr/bin/env python",
+                  "",
+                  "import argparse",
+                  "from collections import namedtuple",
+                  "import json",
+                  "",
+                  "from boto.ec2.elb import connect_to_region",
+                  "from jinja2 import Environment, FileSystemLoader",
+                  "import marathon",
+                  "",
+                  "",
+                  "Frontend = namedtuple('Frontend', ['id', 'protocol', 'port', 'backends'])",
+                  "Backend = namedtuple('Backend', ['id', 'host', 'port'])",
+                  "",
+                  "",
+                  "class ProxyRule(object):",
+                  "",
+                  "    def __init__(self, app_id, protocol, app_port, haproxy_port, acl=None):",
+                  "        self.app_id = app_id",
+                  "        self.protocol = protocol",
+                  "        self.app_port = app_port",
+                  "        self.haproxy_port = haproxy_port",
+                  "        self.acl = acl",
+                  "",
+                  "    @classmethod",
+                  "    def from_json(cls, obj):",
+                  "        return [",
+                  "            ProxyRule(r[0], r[1], r[2], r[3]) if len(r) < 5 else",
+                  "            ProxyRule(r[0], r[1], r[2], r[3], r[4])",
+                  "            for r in obj",
+                  "",
+                  "        ]",
+                  "",
+                  "",
+                  "def update_listeners(region_name, elb_name, proxy_rules):",
+                  "    c = connect_to_region(region_name)",
+                  "    c.create_load_balancer_listeners(elb_name, [(p.haproxy_port, p.haproxy_port, p.protocol) for p in proxy_rules])",
+                  "",
+                  "",
+                  "def sanitize(app_id):",
+                  "    return app_id.replace('/', ':')",
+                  "",
+                  "",
+                  "def main():",
+                  "    parser = argparse.ArgumentParser()",
+                  "    parser.add_argument('-m', dest='marathon_url', required=True, help='Marathon server URL (http[s]://<host>:<port>)')",
+                  "    parser.add_argument('-r', dest='rules', required=True,",
+                  "        help='JSON array of (app name, protocol, HAProxy port, app port) tuples (e.g., \\'[[\"myapp\", \"tcp\", 8081, 80]]\\'')",
+                  "    parser.add_argument('-t', dest='template', required=True, help='Path to Jinja2 template to render')",
+                  "    parser.add_argument('-o', dest='output_file', help='Where to write the rendered template (if unset, print to stdout)')",
+                  "",
+                  "    aws_args = parser.add_argument_group('AWS arguments')",
+                  "    aws_args.add_argument('--elb', dest='elb', help='Name of the AWS ELB on which to update listeners')",
+                  "    aws_args.add_argument('--region', dest='region', help='AWS region of the ELB')",
+                  "",
+                  "    args = parser.parse_args()",
+                  "    rules = ProxyRule.from_json(json.loads(args.rules))",
+                  "",
+                  "    m = marathon.MarathonClient(args.marathon_url)",
+                  "    endpoints = m.list_endpoints()",
+                  "",
+                  "    # Sort to ensure template renders consistently",
+                  "    endpoints.sort(key=lambda e: e.task_id)",
+                  "",
+                  "    frontends = [",
+                  "        Frontend(sanitize(r.app_id), r.protocol, r.haproxy_port,",
+                  "            [Backend(e.task_id, e.host, e.task_port)",
+                  "            for e in endpoints if e.app_id == r.app_id and e.service_port == r.app_port]",
+                  "        ) for r in rules",
+                  "    ]",
+                  "",
+                  "    env = Environment(loader=FileSystemLoader('/'))",
+                  "    template = env.get_template(args.template)",
+                  "",
+                  "    rendered_template = template.render(frontends=frontends)",
+                  "    if args.output_file:",
+                  "        with open(args.output_file, 'wb') as fh:",
+                  "            fh.write(rendered_template)",
+                  "    else:",
+                  "        print rendered_template",
+                  "",
+                  "    if args.elb and args.region:",
+                  "        update_listeners(args.region, args.elb, rules)",
+                  "",
+                  "",
+                  "if __name__ == '__main__':",
+                  "    main()",
+                  ""
+                ]]},
+                "mode"    : "000755",
+                "owner"   : "root",
+                "group"   : "root"
+              },
+
+              "/opt/haproxycfg/haproxycfg": {
+                "content" : { "Fn::Join" : ["", [
+                  "#!/bin/bash -e\n",
+                  "while true; do\n",
+                  "  MD5=`md5sum /etc/haproxy/haproxy.cfg`\n",
+                  "  /usr/local/bin/routathon",
+                  "    -m {{ marathon_url }}",
+                  "    -r '", { "Ref" : "ProxyRules" }, "'",
+                  "    -t /etc/haproxy/haproxy.cfg.jinja2",
+                  "    -o /etc/haproxy/haproxy.cfg",
+                  "    --elb {{elb}}",
+                  "    --region {{region}}\n",
+                  "  if [[ \"$MD5\" != \"`md5sum /etc/haproxy/haproxy.cfg`\" ]]; then\n",
+                  "    echo 'Changes detected - reloading HAProxy config'\n",
+                  "    service haproxy reload 2>&1\n",
+                  "  fi\n",
+                  "  sleep 5\n",
+                  "done\n"
+                ]]},
+                "context" : {
+                  "marathon_url" : { "Ref" : "MarathonUrl" },
+                  "rules" : "# do not use: will convert \" to &quot",
+                  "elb" : { "Ref" : "ElasticLoadBalancer" },
+                  "region" : { "Ref" : "AWS::Region" }
+                },
+                "mode"    : "000755",
+                "owner"   : "root",
+                "group"   : "root"
+              }
+
+            }
+          }
+        }
+      },
+      "Properties" : {
+        "KeyName" : { "Ref" : "KeyName" },
+        "ImageId" : { "Fn::FindInMap" : [ "RegionMap", { "Ref" : "AWS::Region" }, "AMI"] },
+        "SecurityGroups" : [ { "Ref" : "ServerSecurityGroup" }, { "Ref" : "AdminSecurityGroup" } ],
+        "AssociatePublicIpAddress": "true",
+        "IamInstanceProfile" : { "Ref" : "ServerInstanceProfile" },
+        "InstanceType" : { "Ref" : "InstanceType" },
+        "UserData"       : { "Fn::Base64" : { "Fn::Join" : ["", [
+          "#!/bin/bash -ex\n",
+
+          "# Helper function\n",
+          "function error_exit\n",
+          "{\n",
+          "  cfn-signal -e 1 -r \"$1\" '", { "Ref" : "WaitHandle" }, "'\n",
+          "  exit 1\n",
+          "}\n",
+
+          "cfn-init -s ", { "Ref" : "AWS::StackName" }, " -r LaunchConfig ",
+          "    --region ", { "Ref" : "AWS::Region" }, " || error_exit 'Failed to run cfn-init'\n",
+
+          "# Install HAProxy\n",
+          "export DEBIAN_FRONTEND=noninteractive\n",
+          "apt-add-repository ppa:vbernat/haproxy-1.5\n",
+          "apt-get update\n",
+          "apt-get -y install haproxy\n",
+
+          "# Enable HAProxy, but just let haproxycfg restart it\n",
+          "echo 'ENABLED=1' > /etc/default/haproxy\n",
+
+          "# Start service to manage haproxy configurations\n",
+          "runit-service create haproxycfg /opt/haproxycfg/haproxycfg\n",
+          "runit-service enable haproxycfg \n",
+
+          "# All is well so signal success\n",
+          "cfn-signal -e 0 -r \"Stack setup complete\" '", { "Ref" : "WaitHandle" }, "'\n",
+
+          "#EOF"
+        ]]}}
+      }
+    },
+
+    "LbSecurityGroup" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "Properties" : {
+        "GroupDescription" : "Allow access to all upper ports",
+        "VpcId" : { "Ref" : "VpcId" },
+        "SecurityGroupIngress" : [
+          { "IpProtocol" : "-1", "FromPort" : "1024", "ToPort" : "65535", "CidrIp" : "0.0.0.0/0" }
+        ]
+      }
+    },
+
+    "ServerSecurityGroup" : {
+      "Type" : "AWS::EC2::SecurityGroup",
+      "Properties" : {
+        "GroupDescription" : "routathon",
+        "VpcId" : { "Ref" : "VpcId" },
+        "SecurityGroupIngress" : [
+          { "IpProtocol" : "-1", "FromPort" : "0", "ToPort" : "65535", "SourceSecurityGroupId" : { "Ref" : "LbSecurityGroup"} }
+        ]
+      }
+    },
+
+    "RoutathonToMarathonIngress" : {
+      "Type" : "AWS::EC2::SecurityGroupIngress",
+      "Properties" : {
+        "GroupId" : { "Ref" : "MarathonServerSecurityGroup" },
+        "IpProtocol" : "tcp",
+        "FromPort" : "8080",
+        "ToPort" : "8080",
+        "SourceSecurityGroupId" : { "Ref" : "ServerSecurityGroup" }
+      }
+    },
+
+    "RoutathonToSlavesIngress" : {
+      "Type" : "AWS::EC2::SecurityGroupIngress",
+      "Properties" : {
+        "GroupId" : { "Ref" : "MesosSlaveSecurityGroup" },
+        "IpProtocol" : "-1",
+        "FromPort" : "0",
+        "ToPort" : "65535",
+        "SourceSecurityGroupId" : { "Ref" : "ServerSecurityGroup" }
+      }
+    },
+
+    "ElasticLoadBalancer" : {
+      "Type" : "AWS::ElasticLoadBalancing::LoadBalancer",
+      "Properties" : {
+        "SecurityGroups": [{ "Ref": "LbSecurityGroup" }, { "Ref" : "AdminSecurityGroup" }],
+        "Subnets": { "Ref": "Subnets" },
+        "Listeners" : [{
+          "LoadBalancerPort" : "1936",
+          "Protocol" : "HTTP",
+          "InstancePort" : "1936",
+          "InstanceProtocol" : "HTTP"
+        }]
+      }
+    },
+
+    "WaitHandle" : {
+      "Type" : "AWS::CloudFormation::WaitConditionHandle"
+    }
+  },
+
+  "Outputs" : {
+    "DnsAddress" : {
+      "Description" : "LB CNAME",
+      "Value" :  { "Fn::GetAtt" : [ "ElasticLoadBalancer", "DNSName" ] }
+    }
+  }
+}
