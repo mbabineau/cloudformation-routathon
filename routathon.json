@@ -26,8 +26,8 @@
       "Description" : "Marathon server URL (http[s]://<host>:<port>)",
       "Type": "String"
     },
-    "MarathonServerSecurityGroup" : {
-      "Description" : "Security group ID for Marathon servers",
+    "MarathonSecurityGroup" : {
+      "Description" : "Security group ID for Marathon (if the URL is a load balancer, use the LB's security group; if the URL is an ELB, it must be an internal-facing ELB)",
       "Type" : "AWS::EC2::SecurityGroup::Id"
     },
     "MesosSlaveSecurityGroup" : {
@@ -156,7 +156,7 @@
         },
         "LaunchConfigurationName" : { "Ref" : "LaunchConfig" },
         "MinSize" : { "Ref" : "InstanceCount" },
-        "MaxSize" : { "Ref" : "InstanceCount" },
+        "MaxSize" : "20",
         "DesiredCapacity" : { "Ref" : "InstanceCount" },
         "LoadBalancerNames" : [ { "Ref" : "ElasticLoadBalancer" } ],
         "VPCZoneIdentifier" : { "Ref" : "Subnets" }
@@ -280,7 +280,7 @@
                   "    parser = argparse.ArgumentParser()",
                   "    parser.add_argument('-m', dest='marathon_url', required=True, help='Marathon server URL (http[s]://<host>:<port>)')",
                   "    parser.add_argument('-r', dest='rules', required=True,",
-                  "        help='JSON array of (app name, protocol, HAProxy port, app port) tuples (e.g., \\'[[\"myapp\", \"tcp\", 8081, 80]]\\'')",
+                  "        help='JSON array of (app name, protocol, app port, HAProxy port) tuples (e.g., \\'[[\"myapp\", \"tcp\", 8081, 80]]\\'')",
                   "    parser.add_argument('-t', dest='template', required=True, help='Path to Jinja2 template to render')",
                   "    parser.add_argument('-o', dest='output_file', help='Where to write the rendered template (if unset, print to stdout)')",
                   "",
@@ -327,7 +327,7 @@
                 "group"   : "root"
               },
 
-              "/opt/haproxycfg/haproxycfg": {
+              "/opt/routathon/routathon": {
                 "content" : { "Fn::Join" : ["", [
                   "#!/bin/bash -e\n",
                   "while true; do\n",
@@ -387,12 +387,12 @@
           "apt-get update\n",
           "apt-get -y install haproxy\n",
 
-          "# Enable HAProxy, but just let haproxycfg restart it\n",
+          "# Enable HAProxy, but just let routathon restart it\n",
           "echo 'ENABLED=1' > /etc/default/haproxy\n",
 
           "# Start service to manage haproxy configurations\n",
-          "runit-service create haproxycfg /opt/haproxycfg/haproxycfg\n",
-          "runit-service enable haproxycfg \n",
+          "runit-service create routathon /opt/routathon/routathon\n",
+          "runit-service enable routathon \n",
 
           "# All is well so signal success\n",
           "cfn-signal -e 0 -r \"Stack setup complete\" '", { "Ref" : "WaitHandle" }, "'\n",
@@ -427,7 +427,7 @@
     "RoutathonToMarathonIngress" : {
       "Type" : "AWS::EC2::SecurityGroupIngress",
       "Properties" : {
-        "GroupId" : { "Ref" : "MarathonServerSecurityGroup" },
+        "GroupId" : { "Ref" : "MarathonSecurityGroup" },
         "IpProtocol" : "tcp",
         "FromPort" : "8080",
         "ToPort" : "8080",

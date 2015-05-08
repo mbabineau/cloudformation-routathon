@@ -45,7 +45,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-m', dest='marathon_url', required=True, help='Marathon server URL (http[s]://<host>:<port>)')
     parser.add_argument('-r', dest='rules', required=True,
-        help='JSON array of (app name, protocol, HAProxy port, app port) tuples (e.g., \'[["myapp", "tcp", 8081, 80]]\'')
+        help='JSON array of (app name, protocol, app port, HAProxy port) tuples (e.g., \'[["myapp", "tcp", 8081, 80]]\'')
     parser.add_argument('-t', dest='template', required=True, help='Path to Jinja2 template to render')
     parser.add_argument('-o', dest='output_file', help='Where to write the rendered template (if unset, print to stdout)')
 
